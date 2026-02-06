@@ -137,25 +137,32 @@ class KPIAgent:
 
     def _route(self, question: str) -> RouterDecision:
         """
-        1) LLM에게 규칙에 맞춘 분류를 요청
-        2) 실패/애매하면 규칙 기반 fallback
-        3) 최종 결과는 반드시 규칙을 만족하도록 강제(요구사항 준수)
+        1) LLM에게 먼저 의도를 물어봅니다 (AI 우선 주의)
+        2) AI가 DB나 RAG가 필요하다고 하면 즉시 수용합니다.
+        3) AI 판단이 모호할 때만 기존 규칙(Rule)을 참고합니다.
         """
+        # 1. AI(LLM)에게 먼저 물어보기
+        llm_route, llm_reason = self._route_by_llm(question)
+        
+        # 2. 규칙(Rule)도 참고용으로만 가져오기
         rule_route, rule_reason = self._route_by_rule(question)
 
-        llm_route, llm_reason = self._route_by_llm(question)
-        if llm_route is None:
-            return RouterDecision(route=rule_route, rationale=f"{rule_reason} (LLM 파싱 실패로 규칙 적용)")
-
-        # LLM이 규칙과 다르게 말하면, 요구사항 상 규칙 우선으로 강제
-        if llm_route != rule_route:
-            rationale = (
-                f"{rule_reason} (LLM 제안: {llm_route} / {llm_reason}) "
-                f"규칙 우선으로 {rule_route}로 확정했습니다."
+        # [수정 포인트] AI가 'DB 조회'나 '매뉴얼 검색'이 필요하다고 하면 AI를 믿습니다.
+        if llm_route in ["DB_QUERY", "RAG_SEARCH"]:
+            return RouterDecision(
+                route=llm_route, 
+                rationale=f"AI 판단 우선: {llm_reason} (규칙 참고: {rule_route})"
             )
-            return RouterDecision(route=rule_route, rationale=rationale)
 
-        return RouterDecision(route=rule_route, rationale=f"{rule_reason} (LLM 확인: {llm_reason})")
+        # 3. AI가 일반 답변(GENERAL)이라고 했지만, 규칙에서 키워드가 걸린 경우
+        if rule_route in ["DB_QUERY", "RAG_SEARCH"]:
+            return RouterDecision(
+                route=rule_route, 
+                rationale=f"키워드 규칙 우선: {rule_reason} (AI 제안: {llm_route})"
+            )
+
+        # 4. 둘 다 모르겠다면 일반 답변으로
+        return RouterDecision(route="GENERAL_ANSWER", rationale="특이사항 없음")
 
     def _route_by_rule(self, question: str) -> Tuple[Route, str]:
         """
